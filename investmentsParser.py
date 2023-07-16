@@ -21,7 +21,7 @@ class InvestmentParser:
         # create sheet for sales
         self.resultXls.create_sheet("Sales")
         # create sheet for taxes/comissions
-        self.resultXls.create_sheet("Taxes&Comissions")
+        self.resultXls.create_sheet("Taxes+Comissions")
 
 
     def parse(self):
@@ -44,21 +44,21 @@ class InvestmentParser:
 
         # Iterate over the rows and col
         for row in sheetCashOp.iter_rows(12, sheetCashOp.max_row):
-            self.handleXtbDivRow(row)
+            self.handleXtbCashHistRow(row)
 
         # Define variable to read sheet
         sheetClosedOp = excelFile["CLOSED POSITION HISTORY"]
 
         # Iterate over the rows and col
         for row in sheetClosedOp.iter_rows(14, sheetClosedOp.max_row):
-            self.handleXtbDivRow(row)
+            self.handleXtbClosedOpRow(row)
 
         self.exportResult("xtb")
 
     def handleXtbClosedOpRow(self, row):
         try:
-            transactDateOpen = row[5].value.strftime('%Y-%m-%d')
-            transactDateClose = row[7].value.strftime('%Y-%m-%d')
+            transactDateOpen = row[5].value.strftime('%Y-%m-%d') # TODO - make this an actual date to be excel compliant
+            transactDateClose = row[7].value.strftime('%Y-%m-%d') # TODO - make this an actual date to be excel compliant
             transactSymbol = row[2].value
             openValue = row[11].value
             closeValue = row[12].value
@@ -74,10 +74,11 @@ class InvestmentParser:
                                         })
 
 
-    def handleXtbDivRow(self, row):
+    def handleXtbCashHistRow(self, row):
         try:
             transactType = row[2].value
-            transactDate = row[3].value.strftime('%Y-%m-%d')
+            transactDate = row[3].value.strftime('%Y-%m-%d') # TODO - make this an actual date to be excel compliant
+            transactComment = row[4].value
             transactSymbol = row[5].value # not all rows have a symbol
             value = row[6].value
         except:
@@ -93,6 +94,8 @@ class InvestmentParser:
                 self.cacheDict['dividends'].append({"date":transactDate, "company":transactSymbol, "value":value})
         elif transactType == 'Deposit':
             self.cacheDict['deposits'].append({"date":transactDate, "value":value})
+        elif transactType in ['tax RO', 'SEC fee']:
+            self.cacheDict['taxes_comissions'].append({"date":transactDate, "value":value, "type":transactType, "moreInfo":transactComment})
         elif transactType in ['Stocks/ETF purchase', 'Profit/Loss', 'Stocks/ETF sale']:
             # nothing to do yet
             pass
@@ -105,13 +108,27 @@ class InvestmentParser:
         sheet.append(["Date","Company", "Value"])
         for row in self.cacheDict['dividends']:
             sheet.append([row["date"], row["company"], row["value"]])
+
         # Deposits sheet
         sheet = self.resultXls["Deposits"]
         sheet.append(["Date", "Value"])
         for row in self.cacheDict['deposits']:
             sheet.append([row["date"], row["value"]])
+
         # Sales sheet
         sheet = self.resultXls["Sales"]
+        sheet.append(["Company", "Open Date", "Sell Date", "Buy Value", "Sell Value", "Profit"])
+        for row in self.cacheDict['sales']:
+            sheet.append([row["company"], row["dateOpen"],row["dateClose"],
+                          row["openValue"],row["closeValue"],
+                          row["closeValue"]-row["openValue"]])
+
+        # Taxes and comissions sheet
+        sheet = self.resultXls["Taxes+Comissions"]
+        sheet.append(["Reason", "Date", "Value", "Comment"])
+        for row in self.cacheDict['taxes_comissions']:
+            sheet.append([row["type"], row["date"],row["value"], row["moreInfo"]])
+
         # export parse result
         self.resultXls.save(f"{filePrefix}_investments_{datetime.datetime.now().strftime('%Y_%m_%d')}.xlsx")
 
