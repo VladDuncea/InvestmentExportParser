@@ -1,10 +1,17 @@
 import sys
 import csv
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook, load_workbook, utils
 import datetime
 
+
+def extractDateFromDateTime(date: datetime.datetime)-> datetime.datetime:
+    return datetime.datetime(year=date.year, month=date.month, day=date.day)
+
+def compareDates(date1: datetime.datetime, date2: datetime.datetime):
+    return date1.strftime("%Y-%m-%d") == date2.strftime("%Y-%m-%d")
+
 class InvestmentParser:
-    def __init__(self, filePath, type):
+    def __init__(self, filePath: str, type: str):
         self.filePath = filePath
         self.type = type
         # Init result xls file
@@ -57,8 +64,8 @@ class InvestmentParser:
 
     def handleXtbClosedOpRow(self, row):
         try:
-            transactDateOpen = row[5].value.strftime('%Y-%m-%d') # TODO - make this an actual date to be excel compliant
-            transactDateClose = row[7].value.strftime('%Y-%m-%d') # TODO - make this an actual date to be excel compliant
+            transactDateOpen = extractDateFromDateTime(row[5].value)
+            transactDateClose = extractDateFromDateTime(row[7].value)
             transactSymbol = row[2].value
             openValue = row[11].value
             closeValue = row[12].value
@@ -77,13 +84,14 @@ class InvestmentParser:
     def handleXtbCashHistRow(self, row):
         try:
             transactType = row[2].value
-            transactDate = row[3].value.strftime('%Y-%m-%d') # TODO - make this an actual date to be excel compliant
+            transactDate = extractDateFromDateTime(row[3].value)
             transactComment = row[4].value
             transactSymbol = row[5].value # not all rows have a symbol
             value = row[6].value
         except:
             # maybe out of data range
             return
+
 
         if transactType in ['Dividend', 'Withholding tax', 'Stamp duty']:
             # if len(self.cacheDict['dividends']) > 0:
@@ -102,32 +110,43 @@ class InvestmentParser:
         else:
             print(f"WARN: Unknown transaction type: {transactType}")
 
-    def exportResult(self, filePrefix):
+    def exportResult(self, filePrefix: str):
         # Dividend sheet
         sheet = self.resultXls["Dividends"]
         sheet.append(["Date","Company", "Value"])
-        for row in self.cacheDict['dividends']:
+        for idx, row in enumerate(self.cacheDict['dividends'],2):
             sheet.append([row["date"], row["company"], row["value"]])
+            sheet[f'A{idx}'].number_format = 'dd-mm-yy'
+            sheet[f'C{idx}'].number_format = '_([$$-en-US]* #,##0.00_);_([$$-en-US]* (#,##0.00);_([$$-en-US]* "-"??_);_(@_)'
 
         # Deposits sheet
         sheet = self.resultXls["Deposits"]
         sheet.append(["Date", "Value"])
-        for row in self.cacheDict['deposits']:
+        for idx, row in enumerate(self.cacheDict['deposits'],2):
             sheet.append([row["date"], row["value"]])
+            sheet[f'A{idx}'].number_format = 'dd-mm-yy'
+            sheet[f'B{idx}'].number_format = '_([$$-en-US]* #,##0.00_);_([$$-en-US]* (#,##0.00);_([$$-en-US]* "-"??_);_(@_)'
 
         # Sales sheet
         sheet = self.resultXls["Sales"]
         sheet.append(["Company", "Open Date", "Sell Date", "Buy Value", "Sell Value", "Profit"])
-        for row in self.cacheDict['sales']:
+        for idx, row in enumerate(self.cacheDict['sales'],2):
             sheet.append([row["company"], row["dateOpen"],row["dateClose"],
                           row["openValue"],row["closeValue"],
                           row["closeValue"]-row["openValue"]])
+            sheet[f'B{idx}'].number_format = 'dd-mm-yy'
+            sheet[f'C{idx}'].number_format = 'dd-mm-yy'
+            sheet[f'D{idx}'].number_format = '_([$$-en-US]* #,##0.00_);_([$$-en-US]* (#,##0.00);_([$$-en-US]* "-"??_);_(@_)'
+            sheet[f'E{idx}'].number_format = '_([$$-en-US]* #,##0.00_);_([$$-en-US]* (#,##0.00);_([$$-en-US]* "-"??_);_(@_)'
+            sheet[f'F{idx}'].number_format = '_([$$-en-US]* #,##0.00_);_([$$-en-US]* (#,##0.00);_([$$-en-US]* "-"??_);_(@_)'
 
         # Taxes and comissions sheet
         sheet = self.resultXls["Taxes+Comissions"]
         sheet.append(["Reason", "Date", "Value", "Comment"])
-        for row in self.cacheDict['taxes_comissions']:
+        for idx, row in enumerate(self.cacheDict['taxes_comissions'],2):
             sheet.append([row["type"], row["date"],row["value"], row["moreInfo"]])
+            sheet[f'B{idx}'].number_format = 'dd-mm-yy'
+            sheet[f'C{idx}'].number_format = '_([$$-en-US]* #,##0.00_);_([$$-en-US]* (#,##0.00);_([$$-en-US]* "-"??_);_(@_)'
 
         # export parse result
         self.resultXls.save(f"{filePrefix}_investments_{datetime.datetime.now().strftime('%Y_%m_%d')}.xlsx")
