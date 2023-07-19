@@ -2,5 +2,7 @@
     "[python]": {
         "editor.defaultFormatter": "ms-python.black-formatter"
     },
-    "python.formatting.provider": "none"
+    "python.formatting.provider": "black",
+    "python.formatting.blackArgs": ["--line-length", "119"],
+    "python.linting.enabled": true
 }
