@@ -3,8 +3,23 @@ import csv
 from openpyxl import Workbook, load_workbook, utils
 import datetime
 
-
-etoroIgnoreList = []
+ignore = False
+etoroList = [
+    1121381748,
+    1128698036,
+    1138197295,
+    1138698607,
+    1174312587,
+    1204353973,
+    1204363261,
+    1177887965,
+    1357911361,
+    1365314951,
+    2404349632,
+    2443378060,
+    1213782880,
+    2592641833,
+]
 
 
 def etoroDateToDateTime(value: str) -> datetime.datetime:
@@ -53,7 +68,9 @@ class InvestmentParser:
         elif self.type == "revolut":
             self.parseRevolut()
         else:
-            print(f"ERR: Wrong type of file, expected 'xtb', 'etoro', 'revolut', got '{self.type}'\n")
+            print(
+                f"ERR: Wrong type of file, expected 'xtb', 'etoro', 'revolut', got '{self.type}'\n"
+            )
 
     ################# REVOLUT ##########################
     def parseRevolut(self):
@@ -71,7 +88,9 @@ class InvestmentParser:
 
     def handleRevolutMainSheetRow(self, row):
         try:
-            transactDate = extractDateFromDateTime(datetime.datetime.fromisoformat(row[0].value.replace("Z", "")))
+            transactDate = extractDateFromDateTime(
+                datetime.datetime.fromisoformat(row[0].value.replace("Z", ""))
+            )
             transactSymbol = row[1].value  # only some transact types have it
             transactType = row[2].value
             transactQuantity = row[3].value  # only some transact types have it
@@ -89,12 +108,19 @@ class InvestmentParser:
         #     totalValue = totalValueStr
 
         if transactType in ["DIVIDEND"]:
-            self.cacheDict["dividends"].append({"date": transactDate, "company": transactSymbol, "value": totalValue})
+            self.cacheDict["dividends"].append(
+                {"date": transactDate, "company": transactSymbol, "value": totalValue}
+            )
         elif transactType in ["CASH TOP-UP", "CASH WITHDRAWAL"]:
-            if len(self.cacheDict["deposits"]) > 0 and self.cacheDict["deposits"][-1]["date"] == transactDate:
+            if (
+                len(self.cacheDict["deposits"]) > 0
+                and self.cacheDict["deposits"][-1]["date"] == transactDate
+            ):
                 self.cacheDict["deposits"][-1]["value"] += totalValue
             else:
-                self.cacheDict["deposits"].append({"date": transactDate, "value": totalValue})
+                self.cacheDict["deposits"].append(
+                    {"date": transactDate, "value": totalValue}
+                )
         elif transactType in ["CUSTODY FEE"]:
             self.cacheDict["taxes_comissions"].append(
                 {
@@ -114,7 +140,9 @@ class InvestmentParser:
                     "value": 0,
                     "firstDate": transactDate,
                 }
-            self.cacheDict["intermediarySales"][transactSymbol]["count"] += transactQuantity
+            self.cacheDict["intermediarySales"][transactSymbol][
+                "count"
+            ] += transactQuantity
             self.cacheDict["intermediarySales"][transactSymbol]["value"] += totalValue
         elif transactType in ["SELL - MARKET"]:
             # we have to do some calculations
@@ -122,7 +150,9 @@ class InvestmentParser:
             # calculate open value as an average of all the open positions
             openValue = knownInfo["value"] / knownInfo["count"] * transactQuantity
             # update known values
-            self.cacheDict["intermediarySales"][transactSymbol]["count"] -= transactQuantity
+            self.cacheDict["intermediarySales"][transactSymbol][
+                "count"
+            ] -= transactQuantity
             self.cacheDict["intermediarySales"][transactSymbol]["value"] -= openValue
             # add info
             self.cacheDict["sales"].append(
@@ -190,12 +220,27 @@ class InvestmentParser:
             transactDate = extractDateFromDateTime(row[3].value)
             transactComment = row[4].value
             transactSymbol = row[5].value  # not all rows have a symbol
+            if transactType in [
+                "Free-funds Interest",
+                "Free-funds Interest Tax",
+            ]:
+                transactSymbol = "DOBANDA"
+            if transactType == "spin-off":
+                transactSymbol += " (spin-off)"
             value = row[6].value
         except:
             # maybe out of data range
             return
 
-        if transactType in ["Dividend", "Withholding tax", "Stamp duty"]:
+        if transactType in [
+            "Dividend",
+            "spin-off",
+            "Withholding tax",
+            "Stamp duty",
+            "Free-funds Interest",
+            "Free-funds Interest Tax",
+            "Impozitul reținut",
+        ]:
             if (
                 len(self.cacheDict["dividends"]) > 0
                 and self.cacheDict["dividends"][-1]["date"] == transactDate
@@ -203,13 +248,20 @@ class InvestmentParser:
             ):
                 self.cacheDict["dividends"][-1]["value"] += value
             else:
-                self.cacheDict["dividends"].append({"date": transactDate, "company": transactSymbol, "value": value})
-        elif transactType == "Deposit":
-            if len(self.cacheDict["deposits"]) > 0 and self.cacheDict["deposits"][-1]["date"] == transactDate:
+                self.cacheDict["dividends"].append(
+                    {"date": transactDate, "company": transactSymbol, "value": value}
+                )
+        elif transactType in ["Deposit", "Depunere"]:
+            if (
+                len(self.cacheDict["deposits"]) > 0
+                and self.cacheDict["deposits"][-1]["date"] == transactDate
+            ):
                 self.cacheDict["deposits"][-1]["value"] += value
             else:
-                self.cacheDict["deposits"].append({"date": transactDate, "value": value})
-        elif transactType in ["tax RO", "SEC fee"]:
+                self.cacheDict["deposits"].append(
+                    {"date": transactDate, "value": value}
+                )
+        elif transactType in ["tax RO", "SEC fee", "Sec Fee"]:
             self.cacheDict["taxes_comissions"].append(
                 {
                     "date": transactDate,
@@ -218,7 +270,14 @@ class InvestmentParser:
                     "moreInfo": transactComment,
                 }
             )
-        elif transactType in ["Stocks/ETF purchase", "Profit/Loss", "Stocks/ETF sale"]:
+        elif transactType in [
+            "Stocks/ETF purchase",
+            "Profit/Loss",
+            "Stocks/ETF sale",
+            "Vânzare acțiuni /ETF-uri",
+            "Acțiuni/Cumpărare ETF ",
+            "Profit/Pierdere",
+        ]:
             # nothing to do yet
             pass
         else:
@@ -251,14 +310,23 @@ class InvestmentParser:
     def handleEtoroClosedOpRow(self, row):
         try:
             transactID = row[0].value
-            if transactID in etoroIgnoreList:
+            if (
+                transactID
+                and transactID != "-"
+                and (int(transactID) in etoroList) == ignore
+            ):
                 return
-            transactDateOpen = extractDateFromDateTime(etoroDateToDateTime(row[4].value))
-            transactDateClose = extractDateFromDateTime(etoroDateToDateTime(row[5].value))
-            openValue = row[2].value
-            closeValue = openValue + row[8].value
+            transactDateOpen = extractDateFromDateTime(
+                etoroDateToDateTime(row[5].value)
+            )
+            transactDateClose = extractDateFromDateTime(
+                etoroDateToDateTime(row[6].value)
+            )
+            openValue = float(row[3].value)
+            closeValue = openValue + float(row[10].value)
             transactSymbol = self.cacheDict["intermediarySales"][transactID]
-            copyFrom = "" if row[14].value == "-" else f" ({row[14].value})"
+            rolloverDivFees = "" if row[17].value == 0 else f" ({row[17].value})"
+            copyFrom = "" if row[18].value == "-" else f" ({row[18].value})"
         except:
             # maybe out of data range
             print("WARN: An exception occurred. ID:" + transactID)
@@ -268,7 +336,7 @@ class InvestmentParser:
             {
                 "dateOpen": transactDateOpen,
                 "dateClose": transactDateClose,
-                "company": transactSymbol + copyFrom,
+                "company": transactSymbol + rolloverDivFees + copyFrom,
                 "openValue": openValue,
                 "closeValue": closeValue,
             }
@@ -277,18 +345,23 @@ class InvestmentParser:
     def handleEtoroAccActivityRow(self, row):
         try:
             transactID = row[8].value  # not all rows have transact ID
-            if transactID in etoroIgnoreList:
+            if (
+                transactID
+                and transactID != "-"
+                and (int(transactID) in etoroList) == ignore
+            ):
                 return
             transactType = row[1].value
             transactDate = extractDateFromDateTime(etoroDateToDateTime(row[0].value))
             # transactComment = row[4].value
-            transactSymbol = row[2].value.split("/")[0] if row[2].value else ""  # not all rows have a symbol
+            transactSymbol = (
+                row[2].value.split("/")[0] if row[2].value else ""
+            )  # not all rows have a symbol
             value = row[3].value
         except:
             print("WARN: An exception occurred")
             # maybe out of data range
             return
-
         if transactType in ["Dividend"]:
             if (
                 len(self.cacheDict["dividends"]) > 0
@@ -298,25 +371,39 @@ class InvestmentParser:
                 self.cacheDict["dividends"][-1]["value"] += value
             else:
                 self.cacheDict["dividends"].append(
-                    {"date": transactDate, "company": self.cacheDict["intermediarySales"][transactID], "value": value}
+                    {
+                        "date": transactDate,
+                        "company": self.cacheDict["intermediarySales"][transactID],
+                        "value": value,
+                    }
                 )
         elif transactType == "Deposit":
-            if len(self.cacheDict["deposits"]) > 0 and self.cacheDict["deposits"][-1]["date"] == transactDate:
+            if (
+                len(self.cacheDict["deposits"]) > 0
+                and self.cacheDict["deposits"][-1]["date"] == transactDate
+            ):
                 self.cacheDict["deposits"][-1]["value"] += value
             else:
-                self.cacheDict["deposits"].append({"date": transactDate, "value": value})
+                self.cacheDict["deposits"].append(
+                    {"date": transactDate, "value": value}
+                )
         elif transactType in ["Open Position", "Position closed"]:
             self.cacheDict["intermediarySales"][transactID] = transactSymbol
-        # elif transactType in ["tax RO", "SEC fee"]:
-        #     self.cacheDict["taxes_comissions"].append(
-        #         {
-        #             "date": transactDate,
-        #             "value": value,
-        #             "type": transactType,
-        #             "moreInfo": transactComment,
-        #         }
-        #     )
-        elif transactType in ["Start Copy", "Stop Copy", "corp action: Split", "Adjustment"]:
+        elif transactType in ["Overnight fee"]:
+            self.cacheDict["taxes_comissions"].append(
+                {
+                    "date": transactDate,
+                    "value": value,
+                    "type": transactType,
+                    "moreInfo": "",
+                }
+            )
+        elif transactType in [
+            "Start Copy",
+            "Stop Copy",
+            "corp action: Split",
+            "Adjustment",
+        ]:
             pass
         else:
             print(f"WARN: Unknown transaction type: {transactType}")
@@ -330,9 +417,9 @@ class InvestmentParser:
         for idx, row in enumerate(self.cacheDict["dividends"], 2):
             sheet.append([row["date"], row["company"], row["value"]])
             sheet[f"A{idx}"].number_format = "dd-mm-yy"
-            sheet[
-                f"C{idx}"
-            ].number_format = '_([$$-en-US]* #,##0.00_);_([$$-en-US]* (#,##0.00);_([$$-en-US]* "-"??_);_(@_)'
+            sheet[f"C{idx}"].number_format = (
+                '_([$$-en-US]* #,##0.00_);_([$$-en-US]* (#,##0.00);_([$$-en-US]* "-"??_);_(@_)'
+            )
 
         # Deposits sheet
         sheet = self.resultXls["Deposits"]
@@ -340,13 +427,15 @@ class InvestmentParser:
         for idx, row in enumerate(self.cacheDict["deposits"], 2):
             sheet.append([row["date"], row["value"]])
             sheet[f"A{idx}"].number_format = "dd-mm-yy"
-            sheet[
-                f"B{idx}"
-            ].number_format = '_([$$-en-US]* #,##0.00_);_([$$-en-US]* (#,##0.00);_([$$-en-US]* "-"??_);_(@_)'
+            sheet[f"B{idx}"].number_format = (
+                '_([$$-en-US]* #,##0.00_);_([$$-en-US]* (#,##0.00);_([$$-en-US]* "-"??_);_(@_)'
+            )
 
         # Sales sheet
         sheet = self.resultXls["Sales"]
-        sheet.append(["Company", "Open Date", "Sell Date", "Buy Value", "Sell Value", "Profit"])
+        sheet.append(
+            ["Company", "Open Date", "Sell Date", "Buy Value", "Sell Value", "Profit"]
+        )
         for idx, row in enumerate(self.cacheDict["sales"], 2):
             sheet.append(
                 [
@@ -360,15 +449,15 @@ class InvestmentParser:
             )
             sheet[f"B{idx}"].number_format = "dd-mm-yy"
             sheet[f"C{idx}"].number_format = "dd-mm-yy"
-            sheet[
-                f"D{idx}"
-            ].number_format = '_([$$-en-US]* #,##0.00_);_([$$-en-US]* (#,##0.00);_([$$-en-US]* "-"??_);_(@_)'
-            sheet[
-                f"E{idx}"
-            ].number_format = '_([$$-en-US]* #,##0.00_);_([$$-en-US]* (#,##0.00);_([$$-en-US]* "-"??_);_(@_)'
-            sheet[
-                f"F{idx}"
-            ].number_format = '_([$$-en-US]* #,##0.00_);_([$$-en-US]* (#,##0.00);_([$$-en-US]* "-"??_);_(@_)'
+            sheet[f"D{idx}"].number_format = (
+                '_([$$-en-US]* #,##0.00_);_([$$-en-US]* (#,##0.00);_([$$-en-US]* "-"??_);_(@_)'
+            )
+            sheet[f"E{idx}"].number_format = (
+                '_([$$-en-US]* #,##0.00_);_([$$-en-US]* (#,##0.00);_([$$-en-US]* "-"??_);_(@_)'
+            )
+            sheet[f"F{idx}"].number_format = (
+                '_([$$-en-US]* #,##0.00_);_([$$-en-US]* (#,##0.00);_([$$-en-US]* "-"??_);_(@_)'
+            )
 
         # Taxes and comissions sheet
         sheet = self.resultXls["Taxes+Comissions"]
@@ -376,12 +465,14 @@ class InvestmentParser:
         for idx, row in enumerate(self.cacheDict["taxes_comissions"], 2):
             sheet.append([row["type"], row["date"], row["value"], row["moreInfo"]])
             sheet[f"B{idx}"].number_format = "dd-mm-yy"
-            sheet[
-                f"C{idx}"
-            ].number_format = '_([$$-en-US]* #,##0.00_);_([$$-en-US]* (#,##0.00);_([$$-en-US]* "-"??_);_(@_)'
+            sheet[f"C{idx}"].number_format = (
+                '_([$$-en-US]* #,##0.00_);_([$$-en-US]* (#,##0.00);_([$$-en-US]* "-"??_);_(@_)'
+            )
 
         # export parse result
-        self.resultXls.save(f"{filePrefix}_investments_{datetime.datetime.now().strftime('%Y_%m_%d')}.xlsx")
+        self.resultXls.save(
+            f"{filePrefix}_investments_{datetime.datetime.now().strftime('%Y_%m_%d')}.xlsx"
+        )
 
 
 # takes arguments form command line, expects 2 args, the path of the excel file and the type of import (xtb or etoro or revolut)
