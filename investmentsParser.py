@@ -2,8 +2,22 @@ import sys
 import csv
 from openpyxl import Workbook, load_workbook, utils
 import datetime
+import uuid
+from forex_python.converter import CurrencyRates
+import json
+import os.path
 
-ignore = False
+c = CurrencyRates()
+useFXRates = False
+
+# TODO cleanup a lot pls
+fxRateCache = {}
+if os.path.isfile("ratesCache.txt"):
+    with open("ratesCache.txt", "r") as file:
+        fxRateCache = json.loads(file.read())
+
+
+ignore = True
 etoroList = [
     1121381748,
     1128698036,
@@ -46,7 +60,18 @@ class InvestmentParser:
             "sales": [],
             "taxes_comissions": [],
             "intermediarySales": {},
+            "deltaRows": [],
         }
+
+    def getFxRate(self, transactDate: datetime.datetime):
+        dateString = transactDate.strftime("%Y_%m_%d")
+        if dateString not in fxRateCache:
+            if not useFXRates:
+                return 1
+            print(f"Loading FX Rate for {dateString}")
+            fxRateCache[dateString] = c.get_rate("USD", "RON", transactDate)
+            print(f"Loaded FX Rate for {dateString}")
+        return fxRateCache[dateString]
 
     def initResultXls(self):
         self.resultXls = Workbook()
@@ -91,11 +116,15 @@ class InvestmentParser:
             transactDate = extractDateFromDateTime(
                 datetime.datetime.fromisoformat(row[0].value.replace("Z", ""))
             )
+            transactFullDate = datetime.datetime.fromisoformat(
+                row[0].value.replace("Z", "")
+            )
             transactSymbol = row[1].value  # only some transact types have it
             transactType = row[2].value
             transactQuantity = row[3].value  # only some transact types have it
             pricePerShare = row[4].value  # only some transact types have it
-            totalValue = row[5].value  # all have total value
+            totalValue = float(row[5].value)  # all have total value
+            fxRate = float(row[7].value)  # fx rate -> to ron
         except:
             # maybe out of data range
             return
@@ -107,9 +136,24 @@ class InvestmentParser:
         # else:
         #     totalValue = totalValueStr
 
-        if transactType in ["DIVIDEND"]:
+        if transactType in ["DIVIDEND", "DIVIDEND TAX (CORRECTION)"]:
             self.cacheDict["dividends"].append(
-                {"date": transactDate, "company": transactSymbol, "value": totalValue}
+                {
+                    "date": transactDate,
+                    "fullDate": transactFullDate,
+                    "company": transactSymbol,
+                    "value": totalValue,
+                }
+            )
+            self.cacheDict["deltaRows"].append(
+                {
+                    "action": "DIVIDEND",
+                    "amount": "",
+                    "fullDate": transactFullDate,
+                    "company": transactSymbol,
+                    "value": totalValue,
+                    "type": "STOCK",
+                }
             )
         elif transactType in ["CASH TOP-UP", "CASH WITHDRAWAL"]:
             if (
@@ -117,10 +161,29 @@ class InvestmentParser:
                 and self.cacheDict["deposits"][-1]["date"] == transactDate
             ):
                 self.cacheDict["deposits"][-1]["value"] += totalValue
+                self.cacheDict["deposits"][-1]["value_ron"] += (1 / fxRate) * totalValue
             else:
                 self.cacheDict["deposits"].append(
-                    {"date": transactDate, "value": totalValue}
+                    {
+                        "date": transactDate,
+                        "value_ron": (1 / fxRate) * totalValue,
+                        "value": totalValue,
+                    }
                 )
+            self.cacheDict["deltaRows"].append(
+                {
+                    "action": (
+                        "DEPOSIT" if transactType == "CASH TOP-UP" else "WITHDRAW"
+                    ),
+                    "amount": (
+                        totalValue if transactType == "CASH TOP-UP" else -totalValue
+                    ),
+                    "fullDate": transactFullDate,
+                    "company": "USD",
+                    "value": "",
+                    "type": "FIAT",
+                }
+            )
         elif transactType in ["CUSTODY FEE"]:
             self.cacheDict["taxes_comissions"].append(
                 {
@@ -128,6 +191,16 @@ class InvestmentParser:
                     "value": totalValue,
                     "type": "monthly fee",
                     "moreInfo": transactType,
+                }
+            )
+            self.cacheDict["deltaRows"].append(
+                {
+                    "action": "WITHDRAW",
+                    "amount": -totalValue,
+                    "fullDate": transactFullDate,
+                    "company": "USD",
+                    "value": "",
+                    "type": "FIAT",
                 }
             )
         elif transactType in [
@@ -144,6 +217,17 @@ class InvestmentParser:
                 "count"
             ] += transactQuantity
             self.cacheDict["intermediarySales"][transactSymbol]["value"] += totalValue
+            if transactType in ["BUY - MARKET"]:
+                self.cacheDict["deltaRows"].append(
+                    {
+                        "action": "BUY",
+                        "amount": transactQuantity,
+                        "fullDate": transactFullDate,
+                        "company": transactSymbol,
+                        "value": totalValue,
+                        "type": "STOCK",
+                    }
+                )
         elif transactType in ["SELL - MARKET"]:
             # we have to do some calculations
             knownInfo = self.cacheDict["intermediarySales"][transactSymbol]
@@ -164,6 +248,16 @@ class InvestmentParser:
                     "company": transactSymbol,
                     "openValue": openValue,
                     "closeValue": totalValue,
+                }
+            )
+            self.cacheDict["deltaRows"].append(
+                {
+                    "action": "SELL",
+                    "amount": transactQuantity,
+                    "fullDate": transactFullDate,
+                    "company": transactSymbol,
+                    "value": totalValue,
+                    "type": "STOCK",
                 }
             )
         else:
@@ -191,13 +285,36 @@ class InvestmentParser:
         for row in sheetClosedOp.iter_rows(14, sheetClosedOp.max_row):
             self.handleXtbClosedOpRow(row)
 
+        ## Dividends for delta
+        for row in self.cacheDict["dividends"]:
+            self.cacheDict["deltaRows"].append(
+                {
+                    "action": "DIVIDEND" if row["company"] != "DOBANDA" else "DEPOSIT",
+                    "amount": "" if row["company"] != "DOBANDA" else row["value"],
+                    "fullDate": row["fullDate"],
+                    "company": (
+                        deltaTickerHelper(row["company"])
+                        if row["company"] != "DOBANDA"
+                        else "USD"
+                    ),
+                    "value": row["value"] if row["company"] != "DOBANDA" else "",
+                    "type": (
+                        deltaCompanyHelper(row["company"])
+                        if row["company"] != "DOBANDA"
+                        else "FIAT"
+                    ),
+                }
+            )
+
         self.exportResult("xtb")
 
     def handleXtbClosedOpRow(self, row):
         try:
             transactDateOpen = extractDateFromDateTime(row[5].value)
             transactDateClose = extractDateFromDateTime(row[7].value)
+            transactFullDate = row[7].value
             transactSymbol = row[2].value
+            volume = row[4].value
             openValue = row[11].value
             closeValue = row[12].value
         except:
@@ -213,11 +330,32 @@ class InvestmentParser:
                 "closeValue": closeValue,
             }
         )
+        companyTicker = deltaTickerHelper(transactSymbol)
+
+        # if (
+        #     self.cacheDict["deltaRows"][-1]
+        #     and self.cacheDict["deltaRows"][-1]["fullDate"] == transactFullDate
+        #     and self.cacheDict["deltaRows"][-1]["company"] == companyTicker
+        # ):
+        #     transactFullDate += datetime.timedelta(0, 1)
+
+        self.cacheDict["deltaRows"].append(
+            {
+                "action": "SELL",
+                "amount": volume,
+                "fullDate": transactFullDate,
+                "company": deltaTickerHelper(transactSymbol),
+                "value": closeValue,
+                "type": deltaCompanyHelper(transactSymbol),
+                "comment": uuid.uuid4(),
+            }
+        )
 
     def handleXtbCashHistRow(self, row):
         try:
             transactType = row[2].value
             transactDate = extractDateFromDateTime(row[3].value)
+            transactFullDate = row[3].value
             transactComment = row[4].value
             transactSymbol = row[5].value  # not all rows have a symbol
             if transactType in [
@@ -234,9 +372,12 @@ class InvestmentParser:
 
         if transactType in [
             "Dividend",
+            "DIVIDENT",
             "spin-off",
             "Withholding tax",
+            "Withholding Tax",
             "Stamp duty",
+            "Stamp Duty",
             "Free-funds Interest",
             "Free-funds Interest Tax",
             "Impozitul reținut",
@@ -249,18 +390,41 @@ class InvestmentParser:
                 self.cacheDict["dividends"][-1]["value"] += value
             else:
                 self.cacheDict["dividends"].append(
-                    {"date": transactDate, "company": transactSymbol, "value": value}
+                    {
+                        "date": transactDate,
+                        "fullDate": transactFullDate,
+                        "company": transactSymbol,
+                        "value": value,
+                    }
                 )
-        elif transactType in ["Deposit", "Depunere"]:
+        elif transactType in ["Deposit", "Depunere", "deposit"]:
+            fxRate = self.getFxRate(transactFullDate)
             if (
                 len(self.cacheDict["deposits"]) > 0
                 and self.cacheDict["deposits"][-1]["date"] == transactDate
             ):
                 self.cacheDict["deposits"][-1]["value"] += value
+                self.cacheDict["deposits"][-1]["value_ron"] += fxRate * value
             else:
                 self.cacheDict["deposits"].append(
-                    {"date": transactDate, "value": value}
+                    {"date": transactDate, "value_ron": fxRate * value, "value": value}
                 )
+            self.cacheDict["deltaRows"].append(
+                {
+                    "action": (
+                        "DEPOSIT"
+                        if transactType in ["Deposit", "Depunere"]
+                        else "WITHDRAW"
+                    ),
+                    "amount": (
+                        value if transactType in ["Deposit", "Depunere"] else -value
+                    ),
+                    "fullDate": transactFullDate,
+                    "company": "USD",
+                    "value": "",
+                    "type": "FIAT",
+                }
+            )
         elif transactType in ["tax RO", "SEC fee", "Sec Fee"]:
             self.cacheDict["taxes_comissions"].append(
                 {
@@ -272,11 +436,26 @@ class InvestmentParser:
             )
         elif transactType in [
             "Stocks/ETF purchase",
+            "Acțiuni/Cumpărare ETF",
+            "Stock purchase",
+        ]:
+            self.cacheDict["deltaRows"].append(
+                {
+                    "action": "BUY",
+                    "amount": transactComment.split(" ")[2].split("/")[0],
+                    "fullDate": transactFullDate,
+                    "company": deltaTickerHelper(transactSymbol),
+                    "value": -value,
+                    "type": deltaCompanyHelper(transactSymbol),
+                }
+            )
+        elif transactType in [
             "Profit/Loss",
             "Stocks/ETF sale",
             "Vânzare acțiuni /ETF-uri",
-            "Acțiuni/Cumpărare ETF ",
             "Profit/Pierdere",
+            "Stock sale",
+            "close trade",
         ]:
             # nothing to do yet
             pass
@@ -377,15 +556,21 @@ class InvestmentParser:
                         "value": value,
                     }
                 )
-        elif transactType == "Deposit":
+        elif transactType in ["Deposit", "Interest Payment"]:
+            fxRate = self.getFxRate(transactDate)
             if (
                 len(self.cacheDict["deposits"]) > 0
                 and self.cacheDict["deposits"][-1]["date"] == transactDate
             ):
                 self.cacheDict["deposits"][-1]["value"] += value
+                self.cacheDict["deposits"][-1]["value_ron"] += fxRate * value
             else:
                 self.cacheDict["deposits"].append(
-                    {"date": transactDate, "value": value}
+                    {
+                        "date": transactDate,
+                        "value_ron": fxRate * value,
+                        "value": value,
+                    }  # value_ron for consistency, cant be calculated
                 )
         elif transactType in ["Open Position", "Position closed"]:
             self.cacheDict["intermediarySales"][transactID] = transactSymbol
@@ -425,16 +610,26 @@ class InvestmentParser:
         sheet = self.resultXls["Deposits"]
         sheet.append(["Date", "Value"])
         for idx, row in enumerate(self.cacheDict["deposits"], 2):
-            sheet.append([row["date"], row["value"]])
+            sheet.append([row["date"], row["value_ron"], row["value"]])
             sheet[f"A{idx}"].number_format = "dd-mm-yy"
             sheet[f"B{idx}"].number_format = (
+                '_-* #,##0.00 [$lei-ro-RO]_-;-* #,##0.00 [$lei-ro-RO]_-;_-* "-"?? [$lei-ro-RO]_-;_-@_-'
+            )
+            sheet[f"C{idx}"].number_format = (
                 '_([$$-en-US]* #,##0.00_);_([$$-en-US]* (#,##0.00);_([$$-en-US]* "-"??_);_(@_)'
             )
 
         # Sales sheet
         sheet = self.resultXls["Sales"]
         sheet.append(
-            ["Company", "Open Date", "Sell Date", "Buy Value", "Sell Value", "Profit"]
+            [
+                "Company",
+                "Open Date",
+                "Sell Date",
+                "Buy Value",
+                "Sell Value",
+                "Profit",
+            ]
         )
         for idx, row in enumerate(self.cacheDict["sales"], 2):
             sheet.append(
@@ -471,8 +666,74 @@ class InvestmentParser:
 
         # export parse result
         self.resultXls.save(
-            f"{filePrefix}_investments_{datetime.datetime.now().strftime('%Y_%m_%d')}.xlsx"
+            f"exportFiles/{filePrefix}_investments_{datetime.datetime.now().strftime('%Y_%m_%d')}.xlsx"
         )
+
+        ## DELTA
+        with open(f"exportFiles/{filePrefix}_delta.csv", "w", newline="") as csvfile:
+            csvWriter = csv.writer(csvfile)
+            csvWriter.writerow(
+                [
+                    "Date",
+                    "Way",
+                    "Base amount",
+                    "Base currency (name)",
+                    "Base type",
+                    "Quote amount",
+                    "Quote currency",
+                    "Exchange",
+                    "Sent/Received from",
+                    "Sent to",
+                    "Fee amount",
+                    "Fee currency (name)",
+                    "Broker",
+                    "Notes",
+                ]
+            )
+            for row in self.cacheDict["deltaRows"]:
+                csvWriter.writerow(
+                    [
+                        row["fullDate"].strftime("%Y-%m-%d %H:%M:%S.%f+00:00"),
+                        row["action"],
+                        row["amount"],
+                        row["company"],
+                        row["type"],
+                        row["value"],
+                        "USD",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        filePrefix,
+                        row["comment"] if "comment" in row else "",
+                    ]
+                )
+
+
+################# DELTA #######################
+
+
+def deltaTickerHelper(ticker):
+    parts = ticker.split(".")
+    if parts[0] == "GOOGC":
+        return "GOOG"
+    if parts[1] == "UK":
+        return parts[0] + ".L"
+    if parts[1] == "DE":
+        return parts[0] + ".DE"
+    return parts[0]
+
+
+def deltaCompanyHelper(ticker):
+    parts = ticker.split(".")
+    if parts[0] in ["CSPX", "CNDX", "IWDA", "RBOT", "IQQH", "EUNL"]:
+        return "FUND"
+    else:
+        return "STOCK"
+
+
+################# END DELTA ###################
 
 
 # takes arguments form command line, expects 2 args, the path of the excel file and the type of import (xtb or etoro or revolut)
@@ -491,3 +752,7 @@ def main(args):
 
 
 main(sys.argv)
+
+# TODO cleanup a lot pls
+with open("ratesCache.txt", "w") as file:
+    file.write(json.dumps(fxRateCache))
