@@ -104,7 +104,6 @@ class InvestmentParser:
 
         # Define variable to read sheet
         sheetMain = excelFile.active
-
         # Iterate over the rows and col
         for row in sheetMain.iter_rows(2, sheetMain.max_row):
             self.handleRevolutMainSheetRow(row)
@@ -123,9 +122,10 @@ class InvestmentParser:
             transactType = row[2].value
             transactQuantity = row[3].value  # only some transact types have it
             pricePerShare = row[4].value  # only some transact types have it
-            totalValue = float(row[5].value)  # all have total value
+            totalValue = float(row[5].value.replace("USD", ""))  # all have total value
             fxRate = float(row[7].value)  # fx rate -> to ron
-        except:
+        except Exception as e:
+            print("WARN: An exception occurred. ID:" + str(e))
             # maybe out of data range
             return
 
@@ -473,6 +473,9 @@ class InvestmentParser:
         # Define variable to read sheet
         sheetAccActivity = excelFile["Account Activity"]
 
+        # INIT FOR DOBANDA
+        self.cacheDict["intermediarySales"][0] = "DOBANDA"
+
         # Iterate over the rows and col
         for row in sheetAccActivity.iter_rows(2, sheetAccActivity.max_row):
             self.handleEtoroAccActivityRow(row)
@@ -531,17 +534,23 @@ class InvestmentParser:
             ):
                 return
             transactType = row[1].value
+
             transactDate = extractDateFromDateTime(etoroDateToDateTime(row[0].value))
             # transactComment = row[4].value
             transactSymbol = (
                 row[2].value.split("/")[0] if row[2].value else ""
             )  # not all rows have a symbol
+            if transactType in [
+                "Interest Payment",
+            ]:
+                transactSymbol = "DOBANDA"
+                transactID = 0
             value = row[3].value
         except:
             print("WARN: An exception occurred")
             # maybe out of data range
             return
-        if transactType in ["Dividend"]:
+        if transactType in ["Dividend", "Interest Payment"]:
             if (
                 len(self.cacheDict["dividends"]) > 0
                 and self.cacheDict["dividends"][-1]["date"] == transactDate
@@ -556,7 +565,7 @@ class InvestmentParser:
                         "value": value,
                     }
                 )
-        elif transactType in ["Deposit", "Interest Payment"]:
+        elif transactType in ["Deposit"]:
             fxRate = self.getFxRate(transactDate)
             if (
                 len(self.cacheDict["deposits"]) > 0
